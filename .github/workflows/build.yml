@@ -86,9 +86,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-13
+          - runner: macos-15-intel
             arch: amd64
-          - runner: macos-14
+          - runner: macos-15-arm64
             arch: arm64
     steps:
       - uses: actions/checkout@v4
