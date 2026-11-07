@@ -1,0 +1,186 @@
+name: Build JsonForge
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: '填写 v1.0.0 可同时创建 Release，留空则只生成构建产物'
+        required: false
+        type: string
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows ${{ matrix.name }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: x64
+            goarch: amd64
+          - name: x86
+            goarch: '386'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+      - name: Build
+        shell: pwsh
+        env:
+          GOOS: windows
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          go build -trimpath -ldflags '-s -w -H windowsgui' -o "dist/JsonForge-windows-${{ matrix.name }}.exe" .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JsonForge-windows-${{ matrix.name }}
+          path: dist/JsonForge-windows-${{ matrix.name }}.exe
+
+  linux:
+    name: Linux ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@v3
+      - name: Build with WebKitGTK container
+        run: |
+          mkdir -p "dist/linux-${{ matrix.arch }}"
+          docker buildx build \
+            --platform "linux/${{ matrix.arch }}" \
+            --file Dockerfile.linux \
+            --target artifact \
+            --output "type=local,dest=dist/linux-${{ matrix.arch }}" \
+            .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JsonForge-linux-${{ matrix.arch }}
+          path: dist/linux-${{ matrix.arch }}/JsonForge-linux-${{ matrix.arch }}
+
+  macos:
+    name: macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    env:
+      APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-13
+            arch: amd64
+          - runner: macos-14
+            arch: arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+      - name: Build macOS app bundle
+        env:
+          GOOS: darwin
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: '1'
+        run: |
+          mkdir -p dist/JsonForge.app/Contents/MacOS
+          go build -trimpath -ldflags '-s -w' -o "dist/JsonForge.app/Contents/MacOS/JsonForge" .
+          cat > dist/JsonForge.app/Contents/Info.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key>
+            <string>JsonForge</string>
+            <key>CFBundleIdentifier</key>
+            <string>cn.jsonforge.app</string>
+            <key>CFBundleName</key>
+            <string>JSON Forge</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleVersion</key>
+            <string>1.0.0</string>
+          </dict>
+          </plist>
+          PLIST
+      - name: Import Apple signing certificate
+        if: ${{ env.APPLE_CERTIFICATE_P12_BASE64 != '' && env.APPLE_CERTIFICATE_PASSWORD != '' && env.APPLE_SIGNING_IDENTITY != '' }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/jsonforge-build.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          CERT_PATH="$RUNNER_TEMP/jsonforge-signing-cert.p12"
+          echo "$APPLE_CERTIFICATE_P12_BASE64" | base64 --decode > "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+          security default-keychain -s "$KEYCHAIN_PATH"
+      - name: Sign macOS app
+        if: ${{ env.APPLE_CERTIFICATE_P12_BASE64 != '' && env.APPLE_CERTIFICATE_PASSWORD != '' && env.APPLE_SIGNING_IDENTITY != '' }}
+        run: |
+          codesign --force --deep --options runtime --timestamp \
+            --sign "$APPLE_SIGNING_IDENTITY" dist/JsonForge.app
+          codesign --verify --deep --strict --verbose=2 dist/JsonForge.app
+      - name: Notarize macOS app
+        if: ${{ env.APPLE_CERTIFICATE_P12_BASE64 != '' && env.APPLE_CERTIFICATE_PASSWORD != '' && env.APPLE_SIGNING_IDENTITY != '' && env.APPLE_ID != '' && env.APPLE_TEAM_ID != '' && env.APPLE_APP_PASSWORD != '' }}
+        run: |
+          NOTARIZE_ZIP="$RUNNER_TEMP/JsonForge-notarize.zip"
+          ditto -c -k --keepParent dist/JsonForge.app "$NOTARIZE_ZIP"
+          xcrun notarytool submit "$NOTARIZE_ZIP" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --wait
+          xcrun stapler staple dist/JsonForge.app
+          xcrun stapler validate dist/JsonForge.app
+      - name: Package macOS app
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent dist/JsonForge.app "dist/JsonForge-macos-${{ matrix.arch }}.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JsonForge-macos-${{ matrix.arch }}
+          path: dist/JsonForge-macos-${{ matrix.arch }}.zip
+
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: [windows, linux, macos]
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: JsonForge-*
+          path: release
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.release_tag }}
+        run: |
+          gh release create "$RELEASE_TAG" release/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "JsonForge $RELEASE_TAG" \
+            --generate-notes

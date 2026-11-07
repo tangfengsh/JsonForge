@@ -1,0 +1,29 @@
+# Windows build outputs
+JsonForge.exe
+JsonForge.exe~
+JsonForge-x86-test.exe
+*.exe
+dist/
+dist-check/
+
+# Local WebView/config data
+config.json
+*.local.json
+
+# Temporary editor and test artifacts
+*.bak
+.playwright-mcp/
+*.log
+
+# macOS/Linux packaging outputs
+*.app/
+*.dmg
+*.zip
+
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# Go tooling
+bin/
+vendor/
