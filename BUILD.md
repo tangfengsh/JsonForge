@@ -60,7 +60,7 @@ macOS 不能用 Linux Docker 容器编译。macOS WebKit 属于 Apple 系统 fra
 ./build.sh
 ```
 
-要求安装 Xcode Command Line Tools 和 Go。GitHub Actions 使用 `macos-15-intel` 和 `macos-15-arm64` runner，生成 Intel (`amd64`) 和 Apple Silicon (`arm64`) 两个版本。
+要求安装 Xcode Command Line Tools 和 Go。GitHub Actions 使用 `macos-15-intel` runner；Intel 版本原生构建，Apple Silicon 版本通过 Apple clang 的 `-arch arm64` 交叉编译。
 
 本机脚本会输出 `dist/JsonForge-macos-amd64.zip` 或 `dist/JsonForge-macos-arm64.zip`，解压后得到 `JsonForge.app`。
 

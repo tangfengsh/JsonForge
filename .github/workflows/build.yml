@@ -88,8 +88,10 @@ jobs:
         include:
           - runner: macos-15-intel
             arch: amd64
-          - runner: macos-15-arm64
+            cgo_flags: ''
+          - runner: macos-15-intel
             arch: arm64
+            cgo_flags: '-arch arm64'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -100,6 +102,10 @@ jobs:
           GOOS: darwin
           GOARCH: ${{ matrix.arch }}
           CGO_ENABLED: '1'
+          CC: clang
+          CXX: clang++
+          CGO_CFLAGS: ${{ matrix.cgo_flags }}
+          CGO_LDFLAGS: ${{ matrix.cgo_flags }}
         run: |
           mkdir -p dist/JsonForge.app/Contents/MacOS
           go build -trimpath -ldflags '-s -w' -o "dist/JsonForge.app/Contents/MacOS/JsonForge" .
