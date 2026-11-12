@@ -222,7 +222,7 @@
 <script>
 const $=id=>document.getElementById(id), input=$('input'), highlight=$('highlight'), gutter=$('gutter'), gutterInner=$('gutterInner');
 let parsed=null, hits=[], activeHit=-1, unicodeEscape=false, fontSize=13;
-const undoStack=[]; let foldState={}, unsortedJson=null; // {lineIndex: true=collapsed}
+const undoStack=[]; let foldState={}, unsortedJson=null, treeRefreshTimer=null; // {lineIndex: true=collapsed}
 
 function setStatus(t,c=''){ $('status').textContent=t; $('status').className=c; }
 function escapeHTML(s){ return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -557,23 +557,24 @@ function setValue(v,pretty=true){
   pushUndo();
   input.value=text;
   foldState={};
-  updateMeta(); render(); setBadge(true); search();
+  updateMeta(); render(); setBadge(true); search(false);
 }
 function pushUndo(){ undoStack.push(input.value); if(undoStack.length>50)undoStack.shift(); }
 function format(validate=false){
   try{
     const v=parseInput();
-    if(validate){ setBadge(true); setStatus('JSON 格式正确','ok'); return; }
+    if(validate){ setBadge(true); search(false); setStatus('JSON 格式正确','ok'); return; }
     const indent=Number($('indent').value||2);
     let text=JSON.stringify(v,null,indent);
     if(unicodeEscape)text=text.replace(/[\u0080-\uffff]/g,ch=>'\\u'+ch.charCodeAt(0).toString(16).padStart(4,'0'));
     pushUndo();
     input.value=text;
     foldState={};
-    updateMeta(); render(); setBadge(true);
+    updateMeta(); render(); setBadge(true); search(false);
     setStatus('格式化完成','ok');
   }catch(err){
     setBadge(false,'JSON 校验失败');
+    search(false);
     let d=err.message,p=/position\s+(\d+)/i.exec(err.message);
     if(p){const n=+p[1]; d+=`：${input.value.slice(Math.max(0,n-45),n)}【此处】${input.value.slice(n,n+70)}`;}
     if(p){
@@ -643,12 +644,13 @@ function locateByKey(keyName,occurrenceIndex,isPrimitive){
   if(vm)return{start:vm.index,end:reVal.lastIndex};
   return{start:keyMatch.start,end:keyMatch.end};
 }
-function search(){
+function search(autoLocate=true){
+  if(treeRefreshTimer){clearTimeout(treeRefreshTimer);treeRefreshTimer=null;}
   const q=$('query').value.trim().toLowerCase(),box=$('results');
   hits=[]; activeHit=-1;
   try{ parsed=parseInput(); setBadge(true); }
   catch(e){
-    setBadge(false);
+    setBadge(false,'JSON 无效');
     box.innerHTML='<div class="empty">当前不是有效 JSON。</div>';
     $('resultCount').textContent='0'; $('searchInfo').textContent='0 个匹配';
     render(); return;
@@ -671,7 +673,7 @@ function search(){
   bindTreeEvents(box);
   render();
   // 搜索时自动定位到第一个匹配
-  if(q){
+  if(q&&autoLocate){
     const firstMatch=box.querySelector('mark');
     if(firstMatch){
       const row=firstMatch.closest('.tree-row');
@@ -682,6 +684,21 @@ function search(){
       }
     }
   }
+}
+function scheduleTreeRefresh(){
+  if(treeRefreshTimer)clearTimeout(treeRefreshTimer);
+  const raw=input.value.trim();
+  if(!raw){
+    $('results').innerHTML='<div class="empty">粘贴或输入 JSON 后显示树形结构</div>';
+    $('resultCount').textContent='0';
+    $('searchInfo').textContent='0 个匹配';
+    setBadge(false);
+    return;
+  }
+  $('results').innerHTML='<div class="empty">正在更新 JSON 树…</div>';
+  $('resultCount').textContent='…';
+  setBadge(false,'解析中…');
+  treeRefreshTimer=setTimeout(()=>search(false),220);
 }
 function countNodes(v){
   if(v===null||typeof v!=='object')return 1;
@@ -877,6 +894,7 @@ function download(){
   setStatus('已下载','ok');
 }
 function clearAll(){
+  if(treeRefreshTimer){clearTimeout(treeRefreshTimer);treeRefreshTimer=null;}
   pushUndo(); input.value=''; foldState={};
   $('query').value=''; parsed=null; hits=[];
   updateMeta(); render(); setBadge(false);
@@ -886,7 +904,7 @@ function clearAll(){
 }
 async function openFile(f){
   pushUndo(); input.value=await f.text(); foldState={};
-  updateMeta(); render(); setBadge(false); search();
+  updateMeta(); render(); setBadge(false); search(false);
   setStatus('已读取 '+f.name,'ok');
 }
 const sample={id:123456789012345678901234567890,pi:3.14159265358979323846,name:'Tony Stark',unicode:'😀',isStudent:false,grades:[85,92.75,78.99,90.01],address:{street:'123 Main St',zip:'230071',tags:['home','primary']},remark:JSON.stringify({nationality:'American',extraInfo:JSON.stringify({alias:'Iron Man'})})};
@@ -903,6 +921,7 @@ $('btnRepair').onclick=()=>{
     setStatus('修复完成','ok');
   }catch(err){
     setBadge(false,'修复失败');
+    search(false);
     let d=err.message,p=/position\s+(\d+)/i.exec(err.message);
     if(p){const n=+p[1]; d+=`:${input.value.slice(Math.max(0,n-45),n)}【此处】${input.value.slice(n,n+70)}`;}
     if(p){
@@ -960,20 +979,20 @@ $('sortDropdown').querySelectorAll('.dropdown-item').forEach(el=>{
     const action=el.dataset.action;
     if(action==='reset'){
       if(!unsortedJson)return setStatus('尚未排序','ok');
-      pushUndo();input.value=unsortedJson;unsortedJson=null;foldState={};updateMeta();render();setBadge(true);setStatus('已还原排序','ok');
+      pushUndo();input.value=unsortedJson;unsortedJson=null;foldState={};updateMeta();render();setBadge(true);search(false);setStatus('已还原排序','ok');
     }else{
       try{const v=parseInput();if(!unsortedJson)unsortedJson=input.value;setValue(sortObject(v,action==='desc'));setStatus(action==='asc'?'键升序完成':'键降序完成','ok');}catch(e){setStatus('排序失败：'+e.message,'bad');}
     }
   };
 });
 $('btnUnicode').onclick=()=>{unicodeEscape=!unicodeEscape;$('btnUnicode').classList.toggle('active',unicodeEscape);setStatus(unicodeEscape?'输出 Unicode 转义':'保留中文与 Emoji','ok');};
-$('btnUndo').onclick=()=>{if(!undoStack.length)return setStatus('没有可撤销操作');input.value=undoStack.pop();foldState={};updateMeta();render();setBadge(false);setStatus('已撤销');};
+$('btnUndo').onclick=()=>{if(!undoStack.length)return setStatus('没有可撤销操作');input.value=undoStack.pop();foldState={};updateMeta();render();setBadge(false);search(false);setStatus('已撤销');};
 $('btnCopy').onclick=copyAll; $('btnDownload').onclick=download;
-$('btnSample').onclick=()=>{pushUndo();input.value=JSON.stringify(sample,null,2);foldState={};updateMeta();render();setBadge(true);search();setStatus('示例已加载','ok');};
+$('btnSample').onclick=()=>{pushUndo();input.value=JSON.stringify(sample,null,2);foldState={};updateMeta();render();setBadge(true);search(false);setStatus('示例已加载','ok');};
 $('btnClear').onclick=clearAll;
 $('btnSearch').onclick=search; $('query').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();search();}};
-input.addEventListener('input',()=>{updateMeta();render();setBadge(false);parsed=null;hits=[];$('results').innerHTML='<div class="empty">粘贴或输入 JSON 后显示树形结构</div>';$('resultCount').textContent='0';$('searchInfo').textContent='0 个匹配';});
-input.addEventListener('paste',()=>setTimeout(()=>{$('query').value='';search();},0));
+input.addEventListener('input',()=>{updateMeta();render();parsed=null;hits=[];scheduleTreeRefresh();});
+input.addEventListener('paste',()=>setTimeout(()=>{$('query').value='';search(false);},0));
 input.addEventListener('scroll',()=>{
   highlight.scrollTop=input.scrollTop;highlight.scrollLeft=input.scrollLeft;
   gutterInner.style.transform='translateY(-'+input.scrollTop+'px)';
